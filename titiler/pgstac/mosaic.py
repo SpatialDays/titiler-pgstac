@@ -244,8 +244,7 @@ class PGSTACBackend(BaseBackend):
                     )
 
                     resp = cursor.fetchone()[0]
-                    if href_exchange_settings.enabled:
-                        resp = change_hrefs(resp)
+
 
                 except pgErrors.RaiseException as e:
                     # Catch Invalid SearchId and raise specific Error
@@ -255,7 +254,8 @@ class PGSTACBackend(BaseBackend):
                         ) from e
                     else:
                         raise e
-
+        if href_exchange_settings.enabled:
+            resp = change_hrefs(resp)
         return resp.get("features", [])
 
     @property
