@@ -1,9 +1,11 @@
 import copy
 import logging
 import requests
-from titiler.pgstac.settings import HrefExchangeSettings
-href_exchange_settings = HrefExchangeSettings()
+
 from urllib.parse import urljoin
+from titiler.pgstac.settings import HrefExchangeSettings
+
+href_exchange_settings = HrefExchangeSettings()
 
 
 def change_hrefs(input_json: str) -> str:
