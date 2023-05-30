@@ -1,12 +1,7 @@
 """titiler-pgstac dependencies."""
-import logging
+import pystac
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
-from titiler.pgstac.settings import HrefExchangeSettings
-href_exchange_settings = HrefExchangeSettings()
-from .href_exchange import change_hrefs
-import pystac
-import requests
 from cachetools import TTLCache, cached
 from cachetools.keys import hashkey
 from fastapi import HTTPException, Path, Query
@@ -14,15 +9,16 @@ from psycopg import errors as pgErrors
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from starlette.requests import Request
-
 from titiler.core.dependencies import DefaultDependency
 from titiler.pgstac import model
-from titiler.pgstac.settings import CacheSettings, RetrySettings
+from titiler.pgstac.settings import CacheSettings, RetrySettings, HrefExchangeSettings
 from titiler.pgstac.utils import retry
+from titiler.pgstac.href_exchange import change_hrefs
+
 
 cache_config = CacheSettings()
 retry_config = RetrySettings()
-
+href_exchange_settings = HrefExchangeSettings()
 
 def PathParams(searchid: str = Path(..., description="Search Id")) -> str:
     """SearcId"""
