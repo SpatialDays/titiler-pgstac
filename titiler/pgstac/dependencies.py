@@ -1,9 +1,10 @@
 """titiler-pgstac dependencies."""
-
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
-
+from .href_exchange import change_hrefs
 import pystac
+import requests
 from cachetools import TTLCache, cached
 from cachetools.keys import hashkey
 from fastapi import HTTPException, Path, Query
@@ -107,7 +108,7 @@ def get_stac_item(pool: ConnectionPool, collection: str, item: str) -> pystac.It
                     status_code=404,
                     detail=f"No item '{item}' found in '{collection}' collection",
                 )
-
+            resp = change_hrefs(resp)
             return pystac.Item.from_dict(resp["features"][0])
 
 
