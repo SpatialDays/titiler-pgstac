@@ -124,6 +124,14 @@ class _RetrySettings(BaseSettings):
         env_file = ".env"
 
 
+class HrefExchangeSettings(BaseSettings):
+    enabled: bool = False
+    stac_fastapi_url: str = "http://localhost:8080"
+
+    class Config:
+        env_prefix = "TITILER_PGSTAC_HREF_EXCHANGE_"
+
+
 @lru_cache()
 def RetrySettings() -> _RetrySettings:
     """This function returns a cached instance of the RetrySettings object."""

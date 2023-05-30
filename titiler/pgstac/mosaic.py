@@ -29,6 +29,10 @@ from rio_tiler.types import AssetInfo, BBox
 
 from titiler.pgstac.settings import CacheSettings, RetrySettings
 from titiler.pgstac.utils import retry
+from titiler.pgstac.settings import HrefExchangeSettings
+href_exchange_settings = HrefExchangeSettings()
+from .href_exchange import change_hrefs
+
 
 cache_config = CacheSettings()
 retry_config = RetrySettings()
@@ -238,7 +242,10 @@ class PGSTACBackend(BaseBackend):
                             skipcovered,
                         ),
                     )
+
                     resp = cursor.fetchone()[0]
+                    if href_exchange_settings.enabled:
+                        resp = change_hrefs(resp)
 
                 except pgErrors.RaiseException as e:
                     # Catch Invalid SearchId and raise specific Error

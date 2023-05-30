@@ -2,6 +2,8 @@
 import logging
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
+from titiler.pgstac.settings import HrefExchangeSettings
+href_exchange_settings = HrefExchangeSettings()
 from .href_exchange import change_hrefs
 import pystac
 import requests
@@ -108,7 +110,8 @@ def get_stac_item(pool: ConnectionPool, collection: str, item: str) -> pystac.It
                     status_code=404,
                     detail=f"No item '{item}' found in '{collection}' collection",
                 )
-            resp = change_hrefs(resp)
+            if href_exchange_settings.enabled:
+                resp = change_hrefs(resp)
             return pystac.Item.from_dict(resp["features"][0])
 
 
