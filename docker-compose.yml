@@ -17,10 +17,10 @@ services:
       - WEB_CONCURRENCY=1
       - WORKERS_PER_CORE=1
       # Postgres connection
-      - POSTGRES_USER=username
-      - POSTGRES_PASS=password
-      - POSTGRES_DBNAME=postgis
-      - POSTGRES_HOST=database
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASS=1y4pS9TclhYjvVfm
+      - POSTGRES_DBNAME=pgstac
+      - POSTGRES_HOST=os-eo-platform-rg-staging-psqlflexibleserver.postgres.database.azure.com
       - POSTGRES_PORT=5432
       # PG connection
       - DB_MIN_CONN_SIZE=1

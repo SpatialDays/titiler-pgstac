@@ -13,7 +13,6 @@ COPY README.md README.md
 COPY LICENSE LICENSE
 
 RUN pip install --no-cache-dir --upgrade .["psycopg-binary"]
-RUN pip install requests
 RUN rm -rf titiler/ pyproject.toml README.md LICENSE
 
 ENV MODULE_NAME titiler.pgstac.main

@@ -24,6 +24,9 @@ from titiler.pgstac.factory import MosaicTilerFactory
 from titiler.pgstac.reader import PgSTACReader
 from titiler.pgstac.settings import ApiSettings
 
+from fastapi.openapi.utils import get_openapi
+
+
 logging.getLogger("botocore.credentials").disabled = True
 logging.getLogger("botocore.utils").disabled = True
 logging.getLogger("rio-tiler").setLevel(logging.ERROR)
@@ -32,6 +35,20 @@ settings = ApiSettings()
 
 app = FastAPI(title=settings.name, version=titiler_pgstac_version)
 
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="TiTiler PgSTAC",
+        version=titiler_pgstac_version,
+        description="A lightweight STAC API implementation using PostgreSQL as a backend.",
+        routes=app.routes,
+        openapi_version="3.0.1",
+    )
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi   
 
 @app.on_event("startup")
 async def startup_event() -> None:

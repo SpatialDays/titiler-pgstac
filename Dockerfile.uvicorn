@@ -10,7 +10,6 @@ COPY README.md README.md
 COPY LICENSE LICENSE
 
 RUN pip install --no-cache-dir --upgrade .["psycopg-binary"] uvicorn
-RUN pip install requests
 RUN rm -rf titiler/ pyproject.toml README.md LICENSE
 
 # http://www.uvicorn.org/settings/
