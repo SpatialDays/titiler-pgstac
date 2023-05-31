@@ -1,6 +1,7 @@
 import copy
 import logging
 import requests
+from typing import Dict
 
 from urllib.parse import urljoin
 from titiler.pgstac.settings import HrefExchangeSettings
@@ -8,7 +9,7 @@ from titiler.pgstac.settings import HrefExchangeSettings
 href_exchange_settings = HrefExchangeSettings()
 
 
-def change_hrefs(input_json: str) -> str:
+def change_hrefs(input_json: Dict) -> Dict:
     base_url = href_exchange_settings.stac_fastapi_url
     new_output = copy.deepcopy(input_json)
     new_output["features"] = []
