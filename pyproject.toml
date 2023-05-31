@@ -33,7 +33,8 @@ dependencies = [
     "stac-pydantic==2.0.*",
     "fastapi>=0.87,<0.95",
     "starlette>=0.21.0,<0.25",
-    "requests",
+    "pypgstac<0.7.7",
+    "requests"
 ]
 dynamic = ["version"]
 
