@@ -1,9 +1,7 @@
 """titiler-pgstac dependencies."""
-
+import pystac
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
-
-import pystac
 from cachetools import TTLCache, cached
 from cachetools.keys import hashkey
 from fastapi import HTTPException, Path, Query
@@ -11,15 +9,16 @@ from psycopg import errors as pgErrors
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from starlette.requests import Request
-
 from titiler.core.dependencies import DefaultDependency
 from titiler.pgstac import model
-from titiler.pgstac.settings import CacheSettings, RetrySettings
+from titiler.pgstac.settings import CacheSettings, RetrySettings, HrefExchangeSettings
 from titiler.pgstac.utils import retry
+from titiler.pgstac.href_exchange import change_hrefs
+
 
 cache_config = CacheSettings()
 retry_config = RetrySettings()
-
+href_exchange_settings = HrefExchangeSettings()
 
 def PathParams(searchid: str = Path(..., description="Search Id")) -> str:
     """SearcId"""
@@ -107,7 +106,8 @@ def get_stac_item(pool: ConnectionPool, collection: str, item: str) -> pystac.It
                     status_code=404,
                     detail=f"No item '{item}' found in '{collection}' collection",
                 )
-
+            if href_exchange_settings.enabled:
+                resp = change_hrefs(resp)
             return pystac.Item.from_dict(resp["features"][0])
 
 

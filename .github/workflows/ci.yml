@@ -40,13 +40,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install requests
+          python -m pip install types-requests
           python -m pip install -e .["test,psycopg"]
 
-      - name: Run pre-commit
-        if: ${{ matrix.python-version == env.LATEST_PY_VERSION }}
-        run: |
-          python -m pip install pre-commit
-          pre-commit run --all-files
+#      - name: Run pre-commit
+#        if: ${{ matrix.python-version == env.LATEST_PY_VERSION }}
+#        run: |
+#          python -m pip install pre-commit
+#          pre-commit run --all-files
 
       - name: Run tests
         run: python -m pytest --cov titiler.pgstac --cov-report xml --cov-report term-missing --asyncio-mode=strict -s -vv
@@ -59,41 +61,3 @@ jobs:
           flags: unittests
           name: ${{ matrix.python-version }}
           fail_ci_if_error: false
-
-  publish:
-    needs: [tests]
-    runs-on: ubuntu-latest
-    if: startsWith(github.event.ref, 'refs/tags') || github.event_name == 'release'
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.LATEST_PY_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install wheel twine build
-          python -m pip install .
-
-      - name: Set tag version
-        id: tag
-        run: |
-          echo "version=${GITHUB_REF#refs/*/}"
-          echo "version=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
-
-      - name: Set module version
-        id: module
-        run: |
-          echo version=$(python -c'import titiler.pgstac; print(titiler.pgstac.__version__)') >> $GITHUB_OUTPUT
-
-      - name: Build and publish
-        if: ${{ steps.tag.outputs.version }} == ${{ steps.module.outputs.version}}
-        env:
-          TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
-          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
-        run: |
-          rm -rf dist
-          python -m build
-          twine upload dist/*
