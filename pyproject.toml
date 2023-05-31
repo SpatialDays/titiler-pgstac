@@ -34,7 +34,8 @@ dependencies = [
     "fastapi>=0.87,<0.95",
     "starlette>=0.21.0,<0.25",
     "pypgstac<0.7.7",
-    "requests"
+    "requests",
+    "types-requests",
 ]
 dynamic = ["version"]
 
