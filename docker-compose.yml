@@ -18,9 +18,9 @@ services:
       - WORKERS_PER_CORE=1
       # Postgres connection
       - POSTGRES_USER=postgres
-      - POSTGRES_PASS=1y4pS9TclhYjvVfm
+      - POSTGRES_PASS=
       - POSTGRES_DBNAME=pgstac
-      - POSTGRES_HOST=os-eo-platform-rg-staging-psqlflexibleserver.postgres.database.azure.com
+      - POSTGRES_HOST=
       - POSTGRES_PORT=5432
       # PG connection
       - DB_MIN_CONN_SIZE=1
@@ -50,7 +50,7 @@ services:
       # TiTiler Config
       - MOSAIC_CONCURRENCY=5
       - TITILER_PGSTAC_HREF_EXCHANGE_ENABLED=True
-      - TITILER_PGSTAC_HREF_EXCHANGE_STAC_FASTAPI_URL=http://stac-fastapi-assets-signing-proxy.os-eo-platform-rg-staging.azure.com/
+      - TITILER_PGSTAC_HREF_EXCHANGE_STAC_FASTAPI_URL=
       # AWS S3 endpoint config
       # - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       # - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
