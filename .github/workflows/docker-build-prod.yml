@@ -7,12 +7,9 @@ on:
     branches:
       - prod
 
-
 jobs:
   docker-build-push-prod:
     runs-on: ubuntu-latest
-    environment: PROD_ENVIRONMENT
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -33,7 +30,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: docker/Dockerfile.pgstac
+          file: Dockerfile.gunicorn
           cache-from: type=registry,ref=${{ secrets.EO_PROJ_PROD_DOCKER_REGISTRY_URL }}/titiler-pgstac:cache
           cache-to: type=registry,ref=${{ secrets.EO_PROJ_PROD_DOCKER_REGISTRY_URL }}/titiler-pgstac:cache,mode=max
           push: true
