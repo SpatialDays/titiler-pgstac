@@ -30,7 +30,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: docker/Dockerfile.gunicorn
+          file: Dockerfile.gunicorn
           cache-from: type=registry,ref=${{ secrets.EO_PROJ_STAGING_DOCKER_REGISTRY_URL }}/titiler-pgstac:cache
           cache-to: type=registry,ref=${{ secrets.EO_PROJ_STAGING_DOCKER_REGISTRY_URL }}/titiler-pgstac:cache,mode=max
           push: true
