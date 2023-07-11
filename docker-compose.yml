@@ -13,7 +13,7 @@ services:
     environment:
       # Application
       - HOST=0.0.0.0
-      - PORT=8081
+      - PORT=8085
       - WEB_CONCURRENCY=1
       - WORKERS_PER_CORE=1
       # Postgres connection
