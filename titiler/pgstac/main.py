@@ -1,15 +1,15 @@
 """TiTiler+PgSTAC FastAPI application."""
 
 import logging
-from http.client import HTTP_PORT, HTTPS_PORT
-from typing import Dict, Tuple, List
 import re
-
 from fastapi import FastAPI, Query
+from fastapi.openapi.utils import get_openapi
+from http.client import HTTP_PORT, HTTPS_PORT
 from psycopg import OperationalError
 from psycopg_pool import PoolTimeout
 from starlette.middleware.cors import CORSMiddleware
-
+from starlette.middleware.cors import CORSMiddleware as _CORSMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
 from titiler.core.factory import AlgorithmFactory, MultiBaseTilerFactory, TMSFactory
 from titiler.core.middleware import (
@@ -19,17 +19,14 @@ from titiler.core.middleware import (
 )
 from titiler.core.resources.enums import OptionalHeader
 from titiler.mosaic.errors import MOSAIC_STATUS_CODES
+from typing import Dict, Tuple, List
+
 from titiler.pgstac import __version__ as titiler_pgstac_version
 from titiler.pgstac.db import close_db_connection, connect_to_db
 from titiler.pgstac.dependencies import ItemPathParams
 from titiler.pgstac.factory import MosaicTilerFactory
 from titiler.pgstac.reader import PgSTACReader
 from titiler.pgstac.settings import ApiSettings
-
-from fastapi.openapi.utils import get_openapi
-from starlette.middleware.cors import CORSMiddleware as _CORSMiddleware
-from starlette.types import ASGIApp, Receive, Scope, Send
-
 
 logging.getLogger("botocore.credentials").disabled = True
 logging.getLogger("botocore.utils").disabled = True
@@ -38,6 +35,7 @@ logging.getLogger("rio-tiler").setLevel(logging.ERROR)
 settings = ApiSettings()
 
 app = FastAPI(title=settings.name, version=titiler_pgstac_version)
+
 
 def custom_openapi():
     if app.openapi_schema:
@@ -52,7 +50,9 @@ def custom_openapi():
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
-app.openapi = custom_openapi   
+
+app.openapi = custom_openapi
+
 
 @app.on_event("startup")
 async def startup_event() -> None:
@@ -69,7 +69,6 @@ async def shutdown_event() -> None:
 add_exception_handlers(app, DEFAULT_STATUS_CODES)
 add_exception_handlers(app, MOSAIC_STATUS_CODES)
 
-
 # Set all CORS enabled origins
 if settings.cors_origins:
     app.add_middleware(
@@ -79,6 +78,7 @@ if settings.cors_origins:
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+
 
 class ProxyHeaderMiddleware:
     """
@@ -102,7 +102,7 @@ class ProxyHeaderMiddleware:
                 port_suffix = ""
                 if port is not None:
                     if (proto == "http" and port != HTTP_PORT) or (
-                        proto == "https" and port != HTTPS_PORT
+                            proto == "https" and port != HTTPS_PORT
                     ):
                         port_suffix = f":{port}"
                 scope["headers"] = self._replace_header_value_by_name(
@@ -152,7 +152,7 @@ class ProxyHeaderMiddleware:
         return (proto, domain, port)
 
     def _get_header_value_by_name(
-        self, scope: Scope, header_name: str, default_value: str = None
+            self, scope: Scope, header_name: str, default_value: str = None
     ) -> str:
         headers = scope["headers"]
         candidates = [
@@ -162,7 +162,7 @@ class ProxyHeaderMiddleware:
 
     @staticmethod
     def _replace_header_value_by_name(
-        scope: Scope, header_name: str, new_value: str
+            scope: Scope, header_name: str, new_value: str
     ) -> List[Tuple[str]]:
         return [
             (name, value)
@@ -221,7 +221,7 @@ app.include_router(algorithms.router, tags=["Algorithms"])
 # Health Check Endpoint
 @app.get("/healthz", description="Health Check", tags=["Health Check"])
 def ping(
-    timeout: int = Query(1, description="Timeout getting SQL connection from the pool.")
+        timeout: int = Query(1, description="Timeout getting SQL connection from the pool.")
 ) -> Dict:
     """Health check."""
     try:
