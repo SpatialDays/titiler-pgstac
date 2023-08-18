@@ -1,5 +1,27 @@
 # Release Notes
 
+## 0.5.1 (2023-08-03)
+
+* add `python-dotenv` requirement
+
+## 0.5.0 (2023-07-20)
+
+* update `titiler` requirement to `>=0.12.0,<0.13`
+* use `Annotated` Type for Query/Path parameters
+* re-order endpoints in `MosaicTilerFactory` to avoid conflicts between `tiles` and `assets` endpoints
+* remove `stac-pydantic` dependency
+* add optional `root_path` setting to specify a url path prefix to use when running the app behind a reverse proxy
+* add landing page `/`
+* use `lifespan` option instead of deprecated `@app.on_event` method to initiate/close DB connection
+
+**breaking changes**
+
+* remove deprecated `/{searchid}/{z}/{x}/{y}/assets` endpoints
+* use /api and /api.html for documentation (instead of /openapi.json and /docs)
+* replace Enum's with `Literal` types
+* replace variable `TileMatrixSetId` by `tileMatrixSetId`
+* add `pixel_selection_dependency` attribute to the `MosaicTilerFactory`
+
 ## 0.4.1 (2023-06-21)
 
 * update `titiler` requirement to `>=0.11.7`

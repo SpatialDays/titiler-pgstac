@@ -36,6 +36,11 @@ dependencies = [
     # "pypgstac<0.7.7",
     "types-requests",
     "requests",
+    "titiler.core>=0.12.0,<0.13",
+    "titiler.mosaic>=0.12.0,<0.13",
+    "geojson-pydantic~=0.6",
+    "pydantic~=1.0",
+    "python-dotenv",
 ]
 dynamic = ["version"]
 

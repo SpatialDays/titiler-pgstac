@@ -35,7 +35,7 @@ The application can be configured using the following environment variables:
 
 
 <p align="center">
-  <img src="https://user-images.githubusercontent.com/10407788/132182694-52cd3d02-5b80-4bb0-9102-b98272fae0f9.png"/>
+  <img width="500" src="https://github.com/stac-utils/titiler-pgstac/assets/10407788/24a64ea9-fede-4ee8-ab8d-625c9e94db44"/>
   <p align="center">Connect PgSTAC and TiTiler.</p>
 </p>
 

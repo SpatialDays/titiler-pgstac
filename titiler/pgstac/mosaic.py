@@ -17,7 +17,7 @@ from morecantile import TileMatrixSet
 from psycopg import errors as pgErrors
 from psycopg_pool import ConnectionPool
 from rasterio.crs import CRS
-from rasterio.warp import transform_geom
+from rasterio.warp import transform, transform_bounds, transform_geom
 from rio_tiler.constants import WEB_MERCATOR_TMS, WGS84_CRS
 from rio_tiler.errors import InvalidAssetName, PointOutsideBounds
 from rio_tiler.io import Reader
@@ -91,15 +91,27 @@ class CustomSTACReader(MultiBaseReader):
 
         """
         if asset not in self.assets:
-            raise InvalidAssetName(f"{asset} is not valid")
+            raise InvalidAssetName(
+                f"{asset} is not valid. Should be one of {self.assets}"
+            )
 
-        info = AssetInfo(url=self.input["assets"][asset]["href"])
-        if "file:header_size" in self.input["assets"][asset]:
-            info["env"] = {
-                "GDAL_INGESTED_BYTES_AT_OPEN": self.input["assets"][asset][
-                    "file:header_size"
-                ]
-            }
+        asset_info = self.input["assets"][asset]
+        info = AssetInfo(
+            url=asset_info["href"],
+            env={},
+        )
+
+        if header_size := asset_info.get("file:header_size"):
+            info["env"]["GDAL_INGESTED_BYTES_AT_OPEN"] = header_size
+
+        if bands := asset_info.get("raster:bands"):
+            stats = [
+                (b["statistics"]["minimum"], b["statistics"]["maximum"])
+                for b in bands
+                if {"minimum", "maximum"}.issubset(b.get("statistics", {}))
+            ]
+            if len(stats) == len(bands):
+                info["dataset_statistics"] = stats
 
         return info
 
@@ -123,11 +135,11 @@ class PGSTACBackend(BaseBackend):
     reader: Type[CustomSTACReader] = attr.ib(init=False, default=CustomSTACReader)
     reader_options: Dict = attr.ib(factory=dict)
 
-    geographic_crs: CRS = attr.ib(default=WGS84_CRS)
-
     # default values for bounds
     bounds: BBox = attr.ib(default=(-180, -90, 180, 90))
+
     crs: CRS = attr.ib(default=WGS84_CRS)
+    geographic_crs: CRS = attr.ib(default=WGS84_CRS)
 
     # The reader is read-only (outside init)
     mosaic_def: MosaicJSON = attr.ib(init=False)
@@ -140,7 +152,7 @@ class PGSTACBackend(BaseBackend):
         # mosaic_def has to be defined.
         # we set `tiles` to an empty list.
         self.mosaic_def = MosaicJSON(
-            mosaicjson="0.0.2",
+            mosaicjson="0.0.3",
             name=self.input,
             bounds=self.bounds,
             minzoom=self.minzoom,
@@ -173,13 +185,24 @@ class PGSTACBackend(BaseBackend):
         bbox = self.tms.bounds(morecantile.Tile(x, y, z))
         return self.get_assets(Polygon.from_bounds(*bbox), **kwargs)
 
-    def assets_for_point(self, lng: float, lat: float, **kwargs: Any) -> List[Dict]:
+    def assets_for_point(
+        self,
+        lng: float,
+        lat: float,
+        coord_crs: CRS = WGS84_CRS,
+        **kwargs: Any,
+    ) -> List[Dict]:
         """Retrieve assets for point."""
         # Point search is currently broken within PgSTAC
         # in order to return the correct result we need to make sure exitwhenfull and skipcovered options
         # are set to `False`
         # ref: https://github.com/stac-utils/pgstac/pull/52
         kwargs.update(**{"exitwhenfull": False, "skipcovered": False})
+
+        if coord_crs != WGS84_CRS:
+            xs, ys = transform(coord_crs, WGS84_CRS, [lng], [lat])
+            lng, lat = xs[0], ys[0]
+
         return self.get_assets(Point(type="Point", coordinates=(lng, lat)), **kwargs)
 
     def assets_for_bbox(
@@ -188,9 +211,20 @@ class PGSTACBackend(BaseBackend):
         ymin: float,
         xmax: float,
         ymax: float,
+        coord_crs: CRS = WGS84_CRS,
         **kwargs: Any,
     ) -> List[Dict]:
         """Retrieve assets for bbox."""
+        if coord_crs != WGS84_CRS:
+            xmin, ymin, xmax, ymax = transform_bounds(
+                coord_crs,
+                WGS84_CRS,
+                xmin,
+                ymin,
+                xmax,
+                ymax,
+            )
+
         return self.get_assets(Polygon.from_bounds(xmin, ymin, xmax, ymax), **kwargs)
 
     @cached(  # type: ignore
@@ -307,6 +341,7 @@ class PGSTACBackend(BaseBackend):
         self,
         lon: float,
         lat: float,
+        coord_crs: CRS = WGS84_CRS,
         reverse: bool = False,
         scan_limit: Optional[int] = None,
         items_limit: Optional[int] = None,
@@ -319,6 +354,7 @@ class PGSTACBackend(BaseBackend):
         mosaic_assets = self.assets_for_point(
             lon,
             lat,
+            coord_crs=coord_crs,
             scan_limit=scan_limit,
             items_limit=items_limit,
             time_limit=time_limit,
@@ -335,10 +371,11 @@ class PGSTACBackend(BaseBackend):
             item: Dict[str, Any],
             lon: float,
             lat: float,
+            coord_crs=coord_crs,
             **kwargs: Any,
         ) -> Dict:
             with self.reader(item, **self.reader_options) as src_dst:
-                return src_dst.point(lon, lat, **kwargs)
+                return src_dst.point(lon, lat, coord_crs=coord_crs, **kwargs)
 
         if "allowed_exceptions" not in kwargs:
             kwargs.update({"allowed_exceptions": (PointOutsideBounds,)})
@@ -363,7 +400,7 @@ class PGSTACBackend(BaseBackend):
         if "geometry" in shape:
             shape = shape["geometry"]
 
-        # PgSTAC except geometry in WGS84
+        # PgSTAC needs geometry in WGS84
         shape_wgs84 = shape
         if shape_crs != WGS84_CRS:
             shape_wgs84 = transform_geom(shape_crs, WGS84_CRS, shape)
