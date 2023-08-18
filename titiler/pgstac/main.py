@@ -2,14 +2,19 @@
 
 import logging
 import re
-
+from contextlib import asynccontextmanager
 from http.client import HTTP_PORT, HTTPS_PORT
+from typing import Dict, Tuple, List
+
+import jinja2
 from fastapi import FastAPI, Query
 from fastapi.openapi.utils import get_openapi
 from psycopg import OperationalError
 from psycopg_pool import PoolTimeout
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.cors import CORSMiddleware as _CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import HTMLResponse
+from starlette.templating import Jinja2Templates
 from starlette.types import ASGIApp, Receive, Scope, Send
 from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
 from titiler.core.factory import AlgorithmFactory, MultiBaseTilerFactory, TMSFactory
@@ -20,7 +25,7 @@ from titiler.core.middleware import (
 )
 from titiler.core.resources.enums import OptionalHeader
 from titiler.mosaic.errors import MOSAIC_STATUS_CODES
-from typing import Dict, Tuple, List
+
 from titiler.pgstac import __version__ as titiler_pgstac_version
 from titiler.pgstac.db import close_db_connection, connect_to_db
 from titiler.pgstac.dependencies import ItemPathParams
@@ -37,10 +42,10 @@ templates = Jinja2Templates(
     loader=jinja2.ChoiceLoader([jinja2.PackageLoader(__package__, "templates")]),
 )  # type:ignore
 
-
 postgres_settings = PostgresSettings()
 settings = ApiSettings()
 
+app = FastAPI(title=settings.name, version=titiler_pgstac_version)
 
 def custom_openapi():
     if app.openapi_schema:
@@ -54,6 +59,8 @@ def custom_openapi():
     )
     app.openapi_schema = openapi_schema
     return app.openapi_schema
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI Lifespan."""
@@ -63,12 +70,15 @@ async def lifespan(app: FastAPI):
     # Close the Connection Pool
     await close_db_connection(app)
 
-app.openapi = custom_openapi   
+
+app.openapi = custom_openapi
+
 
 @app.on_event("startup")
 async def startup_event() -> None:
     """Connect to database on startup."""
     await connect_to_db(app)
+
 
 app = FastAPI(
     title=settings.name,
@@ -92,7 +102,6 @@ app = FastAPI(
 add_exception_handlers(app, DEFAULT_STATUS_CODES)
 add_exception_handlers(app, MOSAIC_STATUS_CODES)
 
-
 # Set all CORS enabled origins
 if settings.cors_origins:
     app.add_middleware(
@@ -102,6 +111,7 @@ if settings.cors_origins:
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+
 
 class ProxyHeaderMiddleware:
     """
@@ -245,7 +255,7 @@ app.include_router(algorithms.router, tags=["Algorithms"])
 # Health Check Endpoint
 @app.get("/healthz", description="Health Check", tags=["Health Check"])
 def ping(
-    timeout: int = Query(1, description="Timeout getting SQL connection from the pool.")
+        timeout: int = Query(1, description="Timeout getting SQL connection from the pool.")
 ) -> Dict:
     """Health check."""
     try:
