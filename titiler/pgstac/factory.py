@@ -1,8 +1,7 @@
 """Custom MosaicTiler Factory for PgSTAC Mosaic Backend."""
-
 import os
 import re
-import sys
+import warnings
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -18,10 +17,12 @@ from typing import (
 )
 from urllib.parse import urlencode
 
+import jinja2
 import rasterio
 from cogeo_mosaic.backends import BaseBackend
 from cogeo_mosaic.errors import MosaicNotFoundError
 from fastapi import Body, Depends, HTTPException, Path, Query
+from fastapi.dependencies.utils import get_dependant, request_params_to_args
 from geojson_pydantic import Feature, FeatureCollection
 from psycopg import sql
 from psycopg.rows import class_row
@@ -31,12 +32,19 @@ from rio_tiler.mosaic.methods.base import MosaicMethodBase
 from starlette.datastructures import QueryParams
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
+from starlette.routing import NoMatchFound
+from starlette.templating import Jinja2Templates
+from typing_extensions import Annotated
 
 from titiler.core.dependencies import (
     AssetsBidxExprParams,
+    BufferParams,
+    ColorFormulaParams,
     CoordCRSParams,
     DefaultDependency,
+    DstCRSParams,
     HistogramParams,
+    PartFeatureParams,
     StatisticsParams,
 )
 from titiler.core.factory import BaseTilerFactory, img_endpoint_params
@@ -44,6 +52,7 @@ from titiler.core.models.mapbox import TileJSON
 from titiler.core.models.responses import MultiBaseStatisticsGeoJSON
 from titiler.core.resources.enums import ImageType, MediaType, OptionalHeader
 from titiler.core.resources.responses import GeoJSONResponse, XMLResponse
+from titiler.core.utils import render_image
 from titiler.mosaic.factory import PixelSelectionParams
 from titiler.pgstac import model
 from titiler.pgstac.dependencies import (
@@ -55,15 +64,27 @@ from titiler.pgstac.dependencies import (
 )
 from titiler.pgstac.mosaic import PGSTACBackend
 
-if sys.version_info >= (3, 9):
-    from typing import Annotated  # pylint: disable=no-name-in-module
-else:
-    from typing_extensions import Annotated
+MOSAIC_THREADS = int(os.getenv("MOSAIC_CONCURRENCY", MAX_THREADS))
+MOSAIC_STRICT_ZOOM = str(os.getenv("MOSAIC_STRICT_ZOOM", False)).lower() in [
+    "true",
+    "yes",
+]
 
 
 def _first_value(values: List[Any], default: Any = None):
     """Return the first not None value."""
     return next(filter(lambda x: x is not None, values), default)
+
+
+DEFAULT_TEMPLATES = Jinja2Templates(
+    directory="",
+    loader=jinja2.ChoiceLoader(
+        [
+            jinja2.PackageLoader(__package__, "templates"),
+            jinja2.PackageLoader("titiler.core", "templates"),
+        ]
+    ),
+)  # type:ignore
 
 
 @dataclass
@@ -78,6 +99,12 @@ class MosaicTilerFactory(BaseTilerFactory):
     stats_dependency: Type[DefaultDependency] = StatisticsParams
     histogram_dependency: Type[DefaultDependency] = HistogramParams
 
+    # Crop endpoints Dependencies
+    # WARNINGS: `/bbox` and `/feature` endpoints should be used carefully because
+    # each request might need to open/read a lot of files if the user decide to
+    # submit large bbox/geojson. This will also depends on the STAC Items resolution.
+    img_part_dependency: Type[DefaultDependency] = PartFeatureParams
+
     # Search dependency
     search_dependency: Callable[
         ..., Tuple[model.PgSTACSearch, model.Metadata]
@@ -89,10 +116,32 @@ class MosaicTilerFactory(BaseTilerFactory):
 
     # Add/Remove some endpoints
     add_statistics: bool = False
-
     add_viewer: bool = False
-
     add_mosaic_list: bool = False
+    add_part: bool = False
+
+    templates: Jinja2Templates = DEFAULT_TEMPLATES
+
+    def check_query_params(
+        self, *, dependencies: List[Callable], query_params: QueryParams
+    ) -> None:
+        """Check QueryParams for Query dependency.
+
+        1. `get_dependant` is used to get the query-parameters required by the `callable`
+        2. we use `request_params_to_args` to construct arguments needed to call the `callable`
+        3. we call the `callable` and catch any errors
+
+        Important: We assume the `callable` in not a co-routine
+
+        """
+        for dependency in dependencies:
+            dep = get_dependant(path="", call=dependency)
+            if dep.query_params:
+                # call the dependency with the query-parameters values
+                query_values, _ = request_params_to_args(dep.query_params, query_params)
+                _ = dependency(**query_values)
+
+        return
 
     def register_routes(self) -> None:
         """This Method register routes to the router."""
@@ -106,6 +155,9 @@ class MosaicTilerFactory(BaseTilerFactory):
         self._tiles_routes()
         self._tilejson_routes()
         self._wmts_routes()
+
+        if self.add_part:
+            self._part_routes()
 
         if self.add_statistics:
             self._statistics_routes()
@@ -159,23 +211,10 @@ class MosaicTilerFactory(BaseTilerFactory):
             layer_params=Depends(self.layer_dependency),
             dataset_params=Depends(self.dataset_dependency),
             pixel_selection=Depends(self.pixel_selection_dependency),
-            buffer: Annotated[
-                Optional[float],
-                Query(
-                    gt=0,
-                    title="Tile buffer.",
-                    description="Buffer on each side of the given tile. It must be a multiple of `0.5`. Output **tilesize** will be expanded to `tilesize + 2 * buffer` (e.g 0.5 = 257x257, 1.0 = 258x258).",
-                ),
-            ] = None,
+            buffer=Depends(BufferParams),
             post_process=Depends(self.process_dependency),
             rescale=Depends(self.rescale_dependency),
-            color_formula: Annotated[
-                Optional[str],
-                Query(
-                    title="Color Formula",
-                    description="rio-color formula (info: https://github.com/mapbox/rio-color)",
-                ),
-            ] = None,
+            color_formula=Depends(ColorFormulaParams),
             colormap=Depends(self.colormap_dependency),
             render_params=Depends(self.render_dependency),
             pgstac_params: PgSTACParams = Depends(),
@@ -184,14 +223,7 @@ class MosaicTilerFactory(BaseTilerFactory):
             env=Depends(self.environment_dependency),
         ):
             """Create map tile."""
-            threads = int(os.getenv("MOSAIC_CONCURRENCY", MAX_THREADS))
-
             scale = scale or 1
-
-            strict_zoom = str(os.getenv("MOSAIC_STRICT_ZOOM", False)).lower() in [
-                "true",
-                "yes",
-            ]
 
             tms = self.supported_tms.get(tileMatrixSetId)
             with rasterio.Env(**env):
@@ -202,7 +234,7 @@ class MosaicTilerFactory(BaseTilerFactory):
                     **backend_params,
                 ) as src_dst:
 
-                    if strict_zoom and (
+                    if MOSAIC_STRICT_ZOOM and (
                         tile.z < src_dst.minzoom or tile.z > src_dst.maxzoom
                     ):
                         raise HTTPException(
@@ -217,7 +249,7 @@ class MosaicTilerFactory(BaseTilerFactory):
                         tilesize=scale * 256,
                         buffer=buffer,
                         pixel_selection=pixel_selection,
-                        threads=threads,
+                        threads=MOSAIC_THREADS,
                         **layer_params,
                         **dataset_params,
                         **pgstac_params,
@@ -232,15 +264,10 @@ class MosaicTilerFactory(BaseTilerFactory):
             if color_formula:
                 image.apply_color_formula(color_formula)
 
-            if colormap:
-                image = image.apply_colormap(colormap)
-
-            if not format:
-                format = ImageType.jpeg if image.mask.all() else ImageType.png
-
-            content = image.render(
-                img_format=format.driver,
-                **format.profile,
+            content, media_type = render_image(
+                image,
+                output_format=format,
+                colormap=colormap,
                 **render_params,
             )
 
@@ -249,7 +276,7 @@ class MosaicTilerFactory(BaseTilerFactory):
                 ids = [x["id"] for x in assets]
                 headers["X-Assets"] = ",".join(ids)
 
-            return Response(content, media_type=format.mediatype, headers=headers)
+            return Response(content, media_type=media_type, headers=headers)
 
     def _tilejson_routes(self) -> None:
         """register tiles routes."""
@@ -296,23 +323,10 @@ class MosaicTilerFactory(BaseTilerFactory):
             layer_params=Depends(self.layer_dependency),
             dataset_params=Depends(self.dataset_dependency),
             pixel_selection=Depends(self.pixel_selection_dependency),
-            buffer: Annotated[
-                Optional[float],
-                Query(
-                    gt=0,
-                    title="Tile buffer.",
-                    description="Buffer on each side of the given tile. It must be a multiple of `0.5`. Output **tilesize** will be expanded to `tilesize + 2 * buffer` (e.g 0.5 = 257x257, 1.0 = 258x258).",
-                ),
-            ] = None,
+            buffer=Depends(BufferParams),
             post_process=Depends(self.process_dependency),
             rescale=Depends(self.rescale_dependency),
-            color_formula: Annotated[
-                Optional[str],
-                Query(
-                    title="Color Formula",
-                    description="rio-color formula (info: https://github.com/mapbox/rio-color)",
-                ),
-            ] = None,
+            color_formula=Depends(ColorFormulaParams),
             colormap=Depends(self.colormap_dependency),
             render_params=Depends(self.render_dependency),
             pgstac_params: PgSTACParams = Depends(),
@@ -411,23 +425,10 @@ class MosaicTilerFactory(BaseTilerFactory):
             layer_params=Depends(self.layer_dependency),
             dataset_params=Depends(self.dataset_dependency),
             pixel_selection=Depends(self.pixel_selection_dependency),
-            buffer: Annotated[
-                Optional[float],
-                Query(
-                    gt=0,
-                    title="Tile buffer.",
-                    description="Buffer on each side of the given tile. It must be a multiple of `0.5`. Output **tilesize** will be expanded to `tilesize + 2 * buffer` (e.g 0.5 = 257x257, 1.0 = 258x258).",
-                ),
-            ] = None,
+            buffer=Depends(BufferParams),
             post_process=Depends(self.process_dependency),
             rescale=Depends(self.rescale_dependency),
-            color_formula: Annotated[
-                Optional[str],
-                Query(
-                    title="Color Formula",
-                    description="rio-color formula (info: https://github.com/mapbox/rio-color)",
-                ),
-            ] = None,
+            color_formula=Depends(ColorFormulaParams),
             colormap=Depends(self.colormap_dependency),
             render_params=Depends(self.render_dependency),
             pgstac_params: PgSTACParams = Depends(),
@@ -469,7 +470,6 @@ class MosaicTilerFactory(BaseTilerFactory):
                 Literal[tuple(self.supported_tms.list())],
                 f"Identifier selecting one of the TileMatrixSetId supported (default: '{self.default_tms}')",
             ] = self.default_tms,
-            src_path=Depends(self.path_dependency),
             tile_format: Annotated[
                 ImageType,
                 Query(description="Output image type. Default is png."),
@@ -488,32 +488,6 @@ class MosaicTilerFactory(BaseTilerFactory):
                 Optional[int],
                 Query(description="Overwrite default maxzoom."),
             ] = None,
-            layer_params=Depends(self.layer_dependency),
-            dataset_params=Depends(self.dataset_dependency),
-            pixel_selection=Depends(self.pixel_selection_dependency),
-            buffer: Annotated[
-                Optional[float],
-                Query(
-                    gt=0,
-                    title="Tile buffer.",
-                    description="Buffer on each side of the given tile. It must be a multiple of `0.5`. Output **tilesize** will be expanded to `tilesize + 2 * buffer` (e.g 0.5 = 257x257, 1.0 = 258x258).",
-                ),
-            ] = None,
-            post_process=Depends(self.process_dependency),
-            rescale=Depends(self.rescale_dependency),
-            color_formula: Annotated[
-                Optional[str],
-                Query(
-                    title="Color Formula",
-                    description="rio-color formula (info: https://github.com/mapbox/rio-color)",
-                ),
-            ] = None,
-            colormap=Depends(self.colormap_dependency),
-            render_params=Depends(self.render_dependency),
-            pgstac_params: PgSTACParams = Depends(),
-            backend_params=Depends(self.backend_dependency),
-            reader_params=Depends(self.reader_dependency),
-            env=Depends(self.environment_dependency),
         ):
             """OGC WMTS endpoint."""
             with request.app.state.dbpool.connection() as conn:
@@ -535,7 +509,48 @@ class MosaicTilerFactory(BaseTilerFactory):
                 "format": tile_format.value,
                 "tileMatrixSetId": tileMatrixSetId,
             }
-            tiles_url = self.url_for(request, "tile", **route_params)
+
+            # `route_params.copy()` this can be removed after titiler>=0.13.2 update
+            tiles_url = self.url_for(request, "tile", **route_params.copy())
+
+            # List of dependencies a `/tile` URL should validate
+            # Note: Those dependencies should only require Query() inputs
+            tile_dependencies = [
+                self.layer_dependency,
+                self.dataset_dependency,
+                self.pixel_selection_dependency,
+                self.process_dependency,
+                self.rescale_dependency,
+                self.colormap_dependency,
+                self.render_dependency,
+                PgSTACParams,
+                self.reader_dependency,
+                self.backend_dependency,
+            ]
+
+            layers: List[Dict[str, Any]] = []
+            if search_info.metadata.defaults:
+                for name, values in search_info.metadata.defaults.items():
+                    query_string = urlencode(values, doseq=True)
+                    try:
+                        self.check_query_params(
+                            dependencies=tile_dependencies,
+                            query_params=QueryParams(query_string),
+                        )
+                    except Exception as e:
+                        warnings.warn(
+                            f"Cannot construct URL for layer `{name}`: {repr(e)}",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+                        continue
+
+                    layers.append(
+                        {
+                            "name": name,
+                            "endpoint": tiles_url + f"?{query_string}",
+                        }
+                    )
 
             qs_key_to_remove = [
                 "tilematrixsetid",
@@ -553,6 +568,20 @@ class MosaicTilerFactory(BaseTilerFactory):
             ]
             if qs:
                 tiles_url += f"?{urlencode(qs)}"
+
+            # Checking if we can construct a valid tile URL
+            # 1. we use `check_query_params` to validate the query-parameter
+            # 2. if there is no layers (from mosaic metadata) we raise the caught error
+            # 3. if there no errors we then add a default `layer` to the layers stack
+            try:
+                self.check_query_params(
+                    dependencies=tile_dependencies, query_params=QueryParams(qs)
+                )
+            except Exception as e:
+                if not layers:
+                    raise e
+            else:
+                layers.append({"name": "default", "endpoint": tiles_url})
 
             tms = self.supported_tms.get(tileMatrixSetId)
             minzoom = _first_value([minzoom, search_info.metadata.minzoom], tms.minzoom)
@@ -581,12 +610,11 @@ class MosaicTilerFactory(BaseTilerFactory):
                 "wmts.xml",
                 {
                     "request": request,
-                    "tiles_endpoint": tiles_url,
+                    "title": search_info.metadata.name or searchid,
                     "bounds": bounds,
                     "tileMatrix": tileMatrix,
                     "tms": tms,
-                    "title": "Mosaic",
-                    "layer_name": "mosaic",
+                    "layers": layers,
                     "media_type": tile_format.mediatype,
                 },
                 media_type=MediaType.xml.value,
@@ -652,7 +680,7 @@ class MosaicTilerFactory(BaseTilerFactory):
                     **pgstac_params,
                 )
 
-    def _search_routes(self) -> None:
+    def _search_routes(self) -> None:  # noqa: C901
         """register search routes."""
 
         @self.router.post(
@@ -672,27 +700,94 @@ class MosaicTilerFactory(BaseTilerFactory):
                     cursor.execute(
                         "SELECT * FROM search_query(%s, _metadata => %s);",
                         (
-                            search.json(by_alias=True, exclude_none=True),
-                            metadata.json(exclude_none=True),
+                            search.model_dump_json(by_alias=True, exclude_none=True),
+                            metadata.model_dump_json(exclude_none=True),
                         ),
                     )
                     search_info = cursor.fetchone()
 
-            return model.RegisterResponse(
-                searchid=search_info.id,
-                links=[
+            links: List[model.Link] = [
+                model.Link(
+                    rel="metadata",
+                    title="Mosaic metadata",
+                    href=self.url_for(request, "info_search", searchid=search_info.id),
+                ),
+                model.Link(
+                    rel="tilejson",
+                    title="Link for TileJSON",
+                    href=self.url_for(request, "tilejson", searchid=search_info.id),
+                ),
+            ]
+
+            try:
+                links.append(
                     model.Link(
-                        rel="metadata",
+                        rel="map",
+                        title="Link for Map viewer",
                         href=self.url_for(
-                            request, "info_search", searchid=search_info.id
+                            request, "map_viewer", searchid=search_info.id
                         ),
-                    ),
+                    )
+                )
+            except NoMatchFound:
+                pass
+
+            try:
+                links.append(
                     model.Link(
-                        rel="tilejson",
-                        href=self.url_for(request, "tilejson", searchid=search_info.id),
-                    ),
-                ],
-            )
+                        rel="wmts",
+                        title="Link for WMTS",
+                        href=self.url_for(request, "wmts", searchid=search_info.id),
+                    )
+                )
+            except NoMatchFound:
+                pass
+
+            if search_info.metadata.defaults:
+                # List of dependencies a `/tile` URL should validate
+                # Note: Those dependencies should only require Query() inputs
+                tile_dependencies = [
+                    self.layer_dependency,
+                    self.dataset_dependency,
+                    self.pixel_selection_dependency,
+                    self.process_dependency,
+                    self.rescale_dependency,
+                    self.colormap_dependency,
+                    self.render_dependency,
+                    PgSTACParams,
+                    self.reader_dependency,
+                    self.backend_dependency,
+                ]
+
+                for name, values in search_info.metadata.defaults.items():
+                    query_string = urlencode(values, doseq=True)
+                    try:
+                        self.check_query_params(
+                            dependencies=tile_dependencies,
+                            query_params=QueryParams(query_string),
+                        )
+                    except Exception as e:
+                        warnings.warn(
+                            f"Cannot construct URL for layer `{name}`: {repr(e)}",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+                        continue
+
+                    links.append(
+                        model.Link(
+                            title=f"TileJSON link for `{name}` layer.",
+                            rel="tilejson",
+                            href=self.url_for(
+                                request,
+                                "tilejson",
+                                searchid=search_info.id,
+                            )
+                            + f"?{query_string}",
+                        )
+                    )
+
+            return model.RegisterResponse(searchid=search_info.id, links=links)
 
         @self.router.get(
             "/{searchid}/info",
@@ -713,21 +808,59 @@ class MosaicTilerFactory(BaseTilerFactory):
             if not search_info:
                 raise MosaicNotFoundError(f"SearchId `{searchid}` not found")
 
-            return model.Info(
-                search=search_info,
-                links=[
+            links: List[model.Link] = [
+                model.Link(
+                    rel="self",
+                    title="Mosaic metadata",
+                    href=self.url_for(request, "info_search", searchid=search_info.id),
+                ),
+                model.Link(
+                    title="Link for TileJSON",
+                    rel="tilejson",
+                    href=self.url_for(request, "tilejson", searchid=search_info.id),
+                ),
+            ]
+
+            try:
+                links.append(
                     model.Link(
-                        rel="self",
+                        rel="map",
+                        title="Link for Map viewer",
                         href=self.url_for(
-                            request, "info_search", searchid=search_info.id
+                            request, "map_viewer", searchid=search_info.id
                         ),
-                    ),
+                    )
+                )
+            except NoMatchFound:
+                pass
+
+            try:
+                links.append(
                     model.Link(
-                        rel="tilejson",
-                        href=self.url_for(request, "tilejson", searchid=search_info.id),
-                    ),
-                ],
-            )
+                        rel="wmts",
+                        title="Link for WMTS",
+                        href=self.url_for(request, "wmts", searchid=search_info.id),
+                    )
+                )
+            except NoMatchFound:
+                pass
+
+            if search_info.metadata.defaults:
+                for name, values in search_info.metadata.defaults.items():
+                    links.append(
+                        model.Link(
+                            title=f"TileJSON link for `{name}` layer.",
+                            rel="tilejson",
+                            href=self.url_for(
+                                request,
+                                "tilejson",
+                                searchid=search_info.id,
+                            )
+                            + f"?{urlencode(values, doseq=True)}",
+                        )
+                    )
+
+            return model.Info(search=search_info, links=links)
 
     def _search_list_routes(self) -> None:
         """Add mosaic listing route."""
@@ -917,12 +1050,12 @@ class MosaicTilerFactory(BaseTilerFactory):
             ],
             searchid=Depends(self.path_dependency),
             coord_crs=Depends(CoordCRSParams),
+            dst_crs=Depends(DstCRSParams),
             layer_params=Depends(self.layer_dependency),
             dataset_params=Depends(self.dataset_dependency),
+            image_params=Depends(self.img_part_dependency),
             pixel_selection=Depends(self.pixel_selection_dependency),
-            max_size: Annotated[
-                int, Query(description="Maximum image size to read onto.")
-            ] = 1024,
+            post_process=Depends(self.process_dependency),
             stats_params=Depends(self.stats_dependency),
             histogram_params=Depends(self.histogram_dependency),
             pgstac_params: PgSTACParams = Depends(),
@@ -935,8 +1068,6 @@ class MosaicTilerFactory(BaseTilerFactory):
             if isinstance(fc, Feature):
                 fc = FeatureCollection(type="FeatureCollection", features=[geojson])
 
-            threads = int(os.getenv("MOSAIC_CONCURRENCY", MAX_THREADS))
-
             with rasterio.Env(**env):
                 with self.reader(
                     searchid,
@@ -944,22 +1075,190 @@ class MosaicTilerFactory(BaseTilerFactory):
                     **backend_params,
                 ) as src_dst:
                     for feature in fc:
-                        data, _ = src_dst.feature(
-                            feature.dict(exclude_none=True),
+                        shape = feature.model_dump(exclude_none=True)
+
+                        image, _ = src_dst.feature(
+                            shape,
                             shape_crs=coord_crs or WGS84_CRS,
+                            dst_crs=dst_crs,
                             pixel_selection=pixel_selection,
-                            threads=threads,
-                            max_size=max_size,
+                            threads=MOSAIC_THREADS,
+                            **image_params,
                             **layer_params,
                             **dataset_params,
                             **pgstac_params,
                         )
 
-                        stats = data.statistics(
-                            **stats_params, hist_options={**histogram_params}
+                        coverage_array = image.get_coverage_array(
+                            shape,
+                            shape_crs=coord_crs or WGS84_CRS,
+                        )
+
+                        if post_process:
+                            image = post_process(image)
+
+                        stats = image.statistics(
+                            **stats_params,
+                            hist_options={**histogram_params},
+                            coverage=coverage_array,
                         )
 
                         feature.properties = feature.properties or {}
                         feature.properties.update({"statistics": stats})
 
             return fc.features[0] if isinstance(geojson, Feature) else fc
+
+    def _part_routes(self):  # noqa: C901
+        """Register /bbox and /feature endpoint."""
+
+        # GET endpoints
+        @self.router.get(
+            "/{searchid}/bbox/{minx},{miny},{maxx},{maxy}.{format}",
+            **img_endpoint_params,
+        )
+        @self.router.get(
+            "/{searchid}/bbox/{minx},{miny},{maxx},{maxy}/{width}x{height}.{format}",
+            **img_endpoint_params,
+        )
+        def bbox_image(
+            minx: Annotated[float, Path(description="Bounding box min X")],
+            miny: Annotated[float, Path(description="Bounding box min Y")],
+            maxx: Annotated[float, Path(description="Bounding box max X")],
+            maxy: Annotated[float, Path(description="Bounding box max Y")],
+            searchid=Depends(self.path_dependency),
+            format: Annotated[
+                ImageType,
+                "Default will be automatically defined if the output image needs a mask (png) or not (jpeg).",
+            ] = None,
+            coord_crs=Depends(CoordCRSParams),
+            dst_crs=Depends(DstCRSParams),
+            layer_params=Depends(self.layer_dependency),
+            dataset_params=Depends(self.dataset_dependency),
+            image_params=Depends(self.img_part_dependency),
+            pixel_selection=Depends(self.pixel_selection_dependency),
+            post_process=Depends(self.process_dependency),
+            rescale=Depends(self.rescale_dependency),
+            color_formula=Depends(ColorFormulaParams),
+            colormap=Depends(self.colormap_dependency),
+            render_params=Depends(self.render_dependency),
+            pgstac_params: PgSTACParams = Depends(),
+            backend_params=Depends(self.backend_dependency),
+            reader_params=Depends(self.reader_dependency),
+            env=Depends(self.environment_dependency),
+        ):
+            """Create image from a bbox."""
+            with rasterio.Env(**env):
+                with self.reader(
+                    searchid,
+                    reader_options={**reader_params},
+                    **backend_params,
+                ) as src_dst:
+                    image, assets = src_dst.part(
+                        [minx, miny, maxx, maxy],
+                        dst_crs=dst_crs,
+                        bounds_crs=coord_crs or WGS84_CRS,
+                        **layer_params,
+                        **image_params,
+                        **dataset_params,
+                    )
+                    dst_colormap = getattr(src_dst, "colormap", None)
+
+            if post_process:
+                image = post_process(image)
+
+            if rescale:
+                image.rescale(rescale)
+
+            if color_formula:
+                image.apply_color_formula(color_formula)
+
+            content, media_type = render_image(
+                image,
+                output_format=format,
+                colormap=colormap or dst_colormap,
+                **render_params,
+            )
+
+            headers: Dict[str, str] = {}
+            if OptionalHeader.x_assets in self.optional_headers:
+                ids = [x["id"] for x in assets]
+                headers["X-Assets"] = ",".join(ids)
+
+            return Response(content, media_type=media_type, headers=headers)
+
+        @self.router.post(
+            "/{searchid}/feature",
+            **img_endpoint_params,
+        )
+        @self.router.post(
+            "/{searchid}/feature.{format}",
+            **img_endpoint_params,
+        )
+        @self.router.post(
+            "/{searchid}/feature/{width}x{height}.{format}",
+            **img_endpoint_params,
+        )
+        def feature_image(
+            geojson: Annotated[Union[Feature], Body(description="GeoJSON Feature.")],
+            searchid=Depends(self.path_dependency),
+            format: Annotated[
+                ImageType,
+                "Default will be automatically defined if the output image needs a mask (png) or not (jpeg).",
+            ] = None,
+            coord_crs=Depends(CoordCRSParams),
+            dst_crs=Depends(DstCRSParams),
+            layer_params=Depends(self.layer_dependency),
+            dataset_params=Depends(self.dataset_dependency),
+            image_params=Depends(self.img_part_dependency),
+            pixel_selection=Depends(self.pixel_selection_dependency),
+            post_process=Depends(self.process_dependency),
+            rescale=Depends(self.rescale_dependency),
+            color_formula=Depends(ColorFormulaParams),
+            colormap=Depends(self.colormap_dependency),
+            render_params=Depends(self.render_dependency),
+            pgstac_params: PgSTACParams = Depends(),
+            backend_params=Depends(self.backend_dependency),
+            reader_params=Depends(self.reader_dependency),
+            env=Depends(self.environment_dependency),
+        ):
+            """Create image from a geojson feature."""
+            with rasterio.Env(**env):
+                with self.reader(
+                    searchid,
+                    reader_options={**reader_params},
+                    **backend_params,
+                ) as src_dst:
+                    image, assets = src_dst.feature(
+                        geojson.model_dump(exclude_none=True),
+                        dst_crs=dst_crs,
+                        shape_crs=coord_crs or WGS84_CRS,
+                        pixel_selection=pixel_selection,
+                        threads=MOSAIC_THREADS,
+                        **layer_params,
+                        **image_params,
+                        **dataset_params,
+                        **pgstac_params,
+                    )
+
+            if post_process:
+                image = post_process(image)
+
+            if rescale:
+                image.rescale(rescale)
+
+            if color_formula:
+                image.apply_color_formula(color_formula)
+
+            content, media_type = render_image(
+                image,
+                output_format=format,
+                colormap=colormap,
+                **render_params,
+            )
+
+            headers: Dict[str, str] = {}
+            if OptionalHeader.x_assets in self.optional_headers:
+                ids = [x["id"] for x in assets]
+                headers["X-Assets"] = ",".join(ids)
+
+            return Response(content, media_type=media_type, headers=headers)

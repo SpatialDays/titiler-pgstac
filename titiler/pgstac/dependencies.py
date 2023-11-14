@@ -14,6 +14,7 @@ from psycopg import errors as pgErrors
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from starlette.requests import Request
+
 from titiler.core.dependencies import DefaultDependency
 from titiler.pgstac import model
 from titiler.pgstac.settings import CacheSettings, RetrySettings, HrefExchangeSettings
@@ -46,7 +47,7 @@ def SearchParams(
     body: model.RegisterMosaic,
 ) -> Tuple[model.PgSTACSearch, model.Metadata]:
     """Search parameters."""
-    search = body.dict(
+    search = body.model_dump(
         exclude_none=True,
         exclude={"metadata"},
         by_alias=True,
@@ -124,7 +125,7 @@ def get_stac_item(pool: ConnectionPool, collection: str, item: str) -> pystac.It
         with conn.cursor(row_factory=dict_row) as cursor:
             cursor.execute(
                 ("SELECT * FROM pgstac.search(%s) LIMIT 1;"),
-                (search.json(by_alias=True, exclude_none=True),),
+                (search.model_dump_json(by_alias=True, exclude_none=True),),
             )
 
             resp = cursor.fetchone()["search"]

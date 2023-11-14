@@ -1,5 +1,66 @@
 # Release Notes
 
+## 0.8.1 (2023-11-10)
+
+* add `algorithm` options for `/statistics [POST]` endpoints
+
+## 0.8.0 (2023-10-06)
+
+* update titiler requirement to `>=0.14.0,<0.15`
+* remove `max_size` default for mosaic's `/statistics [POST]` endpoint  **breaking change**
+* add `/bbox` and `/feature [POST]` optional endpoints
+* add `img_part_dependency` attribute in `MosaicTilerFactory` (defaults to `titiler.code.dependencies.PartFeatureParams`)
+
+## 0.7.0 (2023-09-28)
+
+* update requirements to switch to pydantic~=2.0
+  - pydantic>=2.4,<3.0
+  - pydantic-settings~=2.0
+  - geojson-pydantic~=1.0
+  - cogeo-mosaic>=7.0,<8.0
+
+* update titiler requirement to `>=0.14.0,<0.15`
+
+    - replace `-` by `_` in query parameters
+
+        * coord-crs -> coord_crs
+        * dst-crs -> dst_crs
+
+## 0.6.0 (2023-09-18)
+
+* add `tilejson` URL links for `layers` defined in mosaic's metadata in `/mosaic/register` and `/mosaic/{mosaic_id}/info` response
+* support multiple `layers` in `/mosaic/{mosaic_id}/WMTSCapabilities.xml` endpoint created from mosaic's metadata
+
+**breaking change**
+
+* In `/mosaic/WMTSCapabilities.xml` we removed the query-parameters related to the `tile` endpoint (which are forwarded) so `?assets=` is no more required.
+The endpoint will still raise an error if there are no `layers` in the mosaic metadata and no required tile's parameters are passed.
+
+    ```python
+    # before
+    response = httpx.get("/mosaic/{mosaic_id}/WMTSCapabilities.xml")
+    assert response.status_code == 400
+
+    response = httpx.get("/mosaic/{mosaic_id}/WMTSCapabilities.xml?assets=cog")
+    assert response.status_code == 200
+
+    # now
+    # If the mosaic has `defaults` layers set in the metadata
+    # we will construct a WMTS document with multiple layers, so no need for the user to pass any `assets=`
+    response = httpx.get("/mosaic/{mosaic_id}/WMTSCapabilities.xml")
+    assert response.status_code == 200
+    with rasterio.open(io.BytesIO(response.content)) as src:
+        assert src.profile["driver"] == "WMTS"
+        assert len(src.subdatasets) == 2
+
+    # If the user pass any valid `tile` parameters, an additional layer will be added to the one from the metadata
+    response = httpx.get("/mosaic/{mosaic_id}/WMTSCapabilities.xml?assets=cog")
+    assert response.status_code == 200
+    with rasterio.open(io.BytesIO(response.content)) as src:
+        assert src.profile["driver"] == "WMTS"
+        assert len(src.subdatasets) == 3
+    ```
+
 ## 0.5.1 (2023-08-03)
 
 * add `python-dotenv` requirement
