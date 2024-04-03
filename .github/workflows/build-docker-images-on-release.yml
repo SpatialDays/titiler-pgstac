@@ -23,8 +23,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.gunicorn
-          cache-from: type=registry,ref=${{ secrets.EO_PROJ_DOCKER_LOGIN_SERVER }}/stac-portal-landing:cache
-          cache-to: type=registry,ref=${{ secrets.EO_PROJ_DOCKER_LOGIN_SERVER }}/stac-portal-landing:cache,mode=max
+          cache-from: type=registry,ref=${{ secrets.EO_PROJ_DOCKER_LOGIN_SERVER }}/titiler-pgstac:cache
+          cache-to: type=registry,ref=${{ secrets.EO_PROJ_DOCKER_LOGIN_SERVER }}/titiler-pgstac:cache,mode=max
           push: true
-          tags: ${{ secrets.EO_PROJ_DOCKER_LOGIN_SERVER }}/stac-portal-landing:${{ github.event.release.tag_name }}
+          tags: ${{ secrets.EO_PROJ_DOCKER_LOGIN_SERVER }}/titiler-pgstac:${{ github.event.release.tag_name }}
 
